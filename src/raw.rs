@@ -31,6 +31,7 @@ use std::{
 const MAX_RAW_KV_SCAN_LIMIT: u32 = 10240;
 
 /// The TiKV raw [`Client`](struct.Client.html) is used to issue requests to the TiKV server and PD cluster.
+#[derive(Clone)]
 pub struct Client {
     rpc: Arc<RpcClient>,
 }
