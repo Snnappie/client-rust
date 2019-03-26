@@ -144,6 +144,7 @@ impl RpcClientInner {
     }
 }
 
+#[derive(Clone)]
 pub struct RpcClient {
     inner: Arc<RpcClientInner>,
 }
@@ -413,13 +414,125 @@ impl RpcClient {
     pub fn raw_batch_scan(
         &self,
         ranges: Vec<(Key, Option<Key>)>,
-        _each_limit: u32,
-        _key_only: bool,
+        each_limit: u32,
+        key_only: bool,
         cf: Option<ColumnFamily>,
-    ) -> impl Future<Item = Vec<KvPair>, Error = Error> {
-        drop(ranges);
-        drop(cf);
-        future::err(Error::unimplemented())
+    ) -> impl Future<Item = Vec<Vec<KvPair>>, Error = Error> {
+        struct State {
+            each_limit: u32,
+            key_only: bool,
+            cf: Option<ColumnFamily>,
+        }
+        let inner = self.inner();
+        let index_ranges = ranges
+            .into_iter()
+            .enumerate()
+            .map(|(i, range)| IndexedKeyRange::new(i, range))
+            .collect();
+        self.group_tasks_by_region(index_ranges)
+            .and_then(move |task_groups| {
+                let task_groups = task_groups.into_inner();
+                let mut tasks = Vec::with_capacity(task_groups.len());
+                for (region, ranges) in task_groups {
+                    let scan = BatchScanRegionsContext::new(
+                        ranges,
+                        State {
+                            each_limit,
+                            key_only,
+                            cf: cf.clone(),
+                        },
+                    );
+                    let inner = Arc::clone(&inner);
+                    let rid = region.id;
+                    let task = loop_fn((inner, Some(rid), scan), |(inner, rid, scan)| {
+                        let cf = scan.state.cf.clone();
+                        match rid {
+                            Some(rid) => Either::A(
+                                Self::region_context_by_id(Arc::clone(&inner), rid)
+                                    .map(|(region, client)| {
+                                        (scan, region.range(), RawContext::new(region, client, cf))
+                                    })
+                                    .and_then(|(mut scan, region_range, context)| {
+                                        context
+                                            .client()
+                                            .raw_batch_scan(
+                                                context,
+                                                scan.ranges().into_iter(),
+                                                scan.state.each_limit,
+                                                scan.state.key_only,
+                                            )
+                                            .map(|pairs| (scan, region_range, pairs))
+                                    })
+                                    .map(|(mut scan, region_range, pairs)| {
+                                        let each_limit = scan.state.each_limit;
+                                        scan.append_pairs(pairs);
+                                        scan.remove_complete_by_limit(each_limit);
+                                        if scan.is_complete() {
+                                            Loop::Break(scan.into_inner())
+                                        } else {
+                                            match scan.next(region_range) {
+                                                ScanRegionsStatus::Break => {
+                                                    Loop::Break(scan.into_inner())
+                                                }
+                                                ScanRegionsStatus::Continue => {
+                                                    Loop::Continue((inner, None, scan))
+                                                }
+                                            }
+                                        }
+                                    }),
+                            ),
+                            None => {
+                                Either::B(inner.locate_key(scan.live_key()).and_then(|location| {
+                                    let region = location.into_inner();
+                                    Self::region_context_by_id(Arc::clone(&inner), region.id)
+                                        .map(|(region, client)| {
+                                            (
+                                                scan,
+                                                region.range(),
+                                                RawContext::new(region, client, cf),
+                                            )
+                                        })
+                                        .and_then(|(mut scan, region_range, context)| {
+                                            context
+                                                .client()
+                                                .raw_batch_scan(
+                                                    context,
+                                                    scan.ranges().into_iter(),
+                                                    scan.state.each_limit,
+                                                    scan.state.key_only,
+                                                )
+                                                .map(|pairs| (scan, region_range, pairs))
+                                        })
+                                        .map(|(mut scan, region_range, pairs)| {
+                                            let each_limit = scan.state.each_limit;
+                                            scan.append_pairs(pairs);
+                                            scan.remove_complete_by_limit(each_limit);
+                                            if scan.is_complete() {
+                                                Loop::Break(scan.into_inner())
+                                            } else {
+                                                match scan.next(region_range) {
+                                                    ScanRegionsStatus::Break => {
+                                                        Loop::Break(scan.into_inner())
+                                                    }
+                                                    ScanRegionsStatus::Continue => {
+                                                        Loop::Continue((inner, None, scan))
+                                                    }
+                                                }
+                                            }
+                                        })
+                                }))
+                            }
+                        }
+                    });
+                    tasks.push(task);
+                }
+                future::join_all(tasks)
+            })
+            .map(|r| {
+                let mut flattened: Vec<_> = r.into_iter().flat_map(|a| a.into_iter()).collect();
+                flattened.sort_unstable_by_key(|t| t.1);
+                flattened.into_iter().map(|t| t.0).collect()
+            })
     }
 
     pub fn raw_delete_range(
@@ -608,9 +721,146 @@ impl GroupingTask for (Key, Option<Key>) {
     }
 }
 
+// TODO Doc this
+#[derive(Clone, Default)]
+struct IndexedKeyRange {
+    idx: usize,
+    range: (Key, Option<Key>),
+}
+
+impl IndexedKeyRange {
+    fn new(idx: usize, range: (Key, Option<Key>)) -> Self {
+        Self { idx, range }
+    }
+
+    fn into_inner(self) -> (Key, Option<Key>) {
+        self.range
+    }
+}
+
+impl GroupingTask for IndexedKeyRange {
+    fn key(&self) -> &Key {
+        self.range.key()
+    }
+}
+
 enum ScanRegionsStatus {
     Continue,
     Break,
+}
+
+struct BatchScanRegionsContext<State>
+where
+    State: Sized,
+{
+    // There is likely a way we can refactor this that is much more sensible than this.
+    ranges: Vec<(Option<Key>, Option<Key>)>,
+    live_ranges: Vec<usize>,
+    result: Vec<(Vec<KvPair>, usize)>,
+    state: State,
+}
+
+impl<State> BatchScanRegionsContext<State>
+where
+    State: Sized,
+{
+    fn new(ranges: Vec<IndexedKeyRange>, state: State) -> Self {
+        let ranges_len = ranges.len();
+        let mut result = Vec::with_capacity(ranges_len);
+        let mut option_ranges = Vec::with_capacity(ranges_len);
+        for range in ranges {
+            result.push((vec![], range.idx));
+            let inner = range.into_inner();
+            option_ranges.push((Some(inner.0), inner.1));
+        }
+        BatchScanRegionsContext {
+            ranges: option_ranges,
+            live_ranges: (0..ranges_len).collect(),
+            result,
+            state,
+        }
+    }
+
+    fn ranges(&mut self) -> Vec<(Option<Key>, Option<Key>)> {
+        self.ranges
+            .iter_mut()
+            .map(|(k, v)| (k.take(), v.clone()))
+            .collect()
+    }
+
+    /// Get a reference to a still active `Key`.
+    fn live_key(&self) -> &Key {
+        self.ranges[self.live_ranges[0]].0.as_ref().unwrap()
+    }
+
+    fn range_contains(&self, range_idx: usize, key: &Key) -> bool {
+        self.ranges[self.live_ranges[range_idx]]
+            .1
+            .as_ref()
+            .map(|k| key < k)
+            .unwrap_or(false)
+    }
+
+    fn append_pairs(&mut self, pairs: Vec<KvPair>) {
+        let mut which_range = 0;
+        for kv in pairs {
+            while which_range < self.live_ranges.len()
+                && !self.range_contains(which_range, kv.key())
+            {
+                which_range += 1;
+            }
+            if which_range == self.live_ranges.len() {
+                panic!("TODO JAB");
+            }
+            self.result[self.live_ranges[which_range]].0.push(kv);
+        }
+    }
+
+    /// Strip out from repeated searches all ranges which are already complete.
+    fn remove_complete_by_limit(&mut self, limit: u32) {
+        let res = &self.result;
+        self.live_ranges
+            .retain(|&idx| (res[idx].0.len() as u32) < limit);
+    }
+
+    fn is_complete(&self) -> bool {
+        self.live_ranges.is_empty()
+    }
+
+    fn next(&mut self, region_range: (Key, Key)) -> ScanRegionsStatus {
+        // {
+        //     let region_end = &region_range.1;
+        //     if self.end_key().map(|x| x < region_end).unwrap_or(false) || region_end.is_empty() {
+        //         return ScanRegionsStatus::Break;
+        //     }
+        // }
+        // self.start_key = Some(region_range.1);
+        // ScanRegionsStatus::Continue
+        let region_end = &region_range.1;
+        // Remove complete by region end.
+        {
+            let ranges = &self.ranges;
+            self.live_ranges.retain(|&idx| {
+                (ranges[idx]
+                    .1
+                    .as_ref()
+                    .map(|x| x < region_end)
+                    .unwrap_or(false)
+                    || region_end.is_empty())
+            });
+        }
+        // Now our live ranges are only those which are still not in bounds of the region.
+        let mut ret = ScanRegionsStatus::Break;
+        for &idx in &self.live_ranges {
+            self.ranges[idx].1 = Some(region_end.clone());
+            ret = ScanRegionsStatus::Continue;
+        }
+        ret
+    }
+
+    fn into_inner(self) -> Vec<(Vec<KvPair>, usize)> {
+        self.result
+    }
 }
 
 struct ScanRegionsContext<Res, State>

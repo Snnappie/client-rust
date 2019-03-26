@@ -748,7 +748,7 @@ impl BatchScanInner {
 }
 
 impl RequestInner for BatchScanInner {
-    type Resp = Vec<KvPair>;
+    type Resp = Vec<Vec<KvPair>>;
 
     fn execute(self, client: Arc<RpcClient>, cf: Option<ColumnFamily>) -> KvFuture<Self::Resp> {
         if self.each_limit > MAX_RAW_KV_SCAN_LIMIT {
@@ -799,7 +799,7 @@ impl BatchScan {
 }
 
 impl Future for BatchScan {
-    type Item = Vec<KvPair>;
+    type Item = Vec<Vec<KvPair>>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
