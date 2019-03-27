@@ -465,7 +465,7 @@ impl RpcClient {
                                     })
                                     .map(|(mut scan, region_range, pairs)| {
                                         let each_limit = scan.state.each_limit;
-                                        scan.append_pairs(pairs);
+                                        scan.append_pairs(pairs, each_limit);
                                         scan.remove_complete_by_limit(each_limit);
                                         if scan.is_complete() {
                                             Loop::Break(scan.into_inner())
@@ -505,7 +505,7 @@ impl RpcClient {
                                         })
                                         .map(|(mut scan, region_range, pairs)| {
                                             let each_limit = scan.state.each_limit;
-                                            scan.append_pairs(pairs);
+                                            scan.append_pairs(pairs, each_limit);
                                             scan.remove_complete_by_limit(each_limit);
                                             if scan.is_complete() {
                                                 Loop::Break(scan.into_inner())
@@ -782,9 +782,13 @@ where
     }
 
     fn ranges(&mut self) -> Vec<(Option<Key>, Option<Key>)> {
-        self.ranges
-            .iter_mut()
-            .map(|(k, v)| (k.take(), v.clone()))
+        let ranges = &mut self.ranges;
+        self.live_ranges
+            .iter()
+            .map(|&idx| {
+                let (k, v) = &mut ranges[idx];
+                (k.take(), v.clone())
+            })
             .collect()
     }
 
@@ -801,8 +805,13 @@ where
             .unwrap_or(false)
     }
 
-    fn append_pairs(&mut self, pairs: Vec<KvPair>) {
+    fn result_mut(&mut self, which: usize) -> &mut Vec<KvPair> {
+        &mut self.result[self.live_ranges[which]].0
+    }
+
+    fn append_pairs(&mut self, pairs: Vec<KvPair>, each_limit: u32) {
         let mut which_range = 0;
+        let _each_limit: usize = each_limit as usize;
         for kv in pairs {
             while which_range < self.live_ranges.len()
                 && !self.range_contains(which_range, kv.key())
@@ -810,9 +819,22 @@ where
                 which_range += 1;
             }
             if which_range == self.live_ranges.len() {
+                // dbg!(which_range);
+                // dbg!(&kv);
+                // dbg!(&self.ranges);
+                // dbg!(&self.live_ranges);
                 panic!("TODO JAB");
             }
-            self.result[self.live_ranges[which_range]].0.push(kv);
+            self.result_mut(which_range).push(kv);
+            // if self.result_mut(which_range).len() >= each_limit {
+            //     let kv = self.result_mut(which_range).last().unwrap();
+            //     dbg!("In the \"each_limit\" branch");
+            //     dbg!(which_range);
+            //     dbg!(kv);
+            //     dbg!(&self.ranges);
+            //     dbg!(&self.live_ranges);
+            //     self.live_ranges.remove(which_range);
+            // }
         }
     }
 
@@ -828,31 +850,25 @@ where
     }
 
     fn next(&mut self, region_range: (Key, Key)) -> ScanRegionsStatus {
-        // {
-        //     let region_end = &region_range.1;
-        //     if self.end_key().map(|x| x < region_end).unwrap_or(false) || region_end.is_empty() {
-        //         return ScanRegionsStatus::Break;
-        //     }
-        // }
-        // self.start_key = Some(region_range.1);
-        // ScanRegionsStatus::Continue
         let region_end = &region_range.1;
         // Remove complete by region end.
         {
             let ranges = &self.ranges;
+            if region_end.is_empty() {
+                self.live_ranges.clear();
+            }
             self.live_ranges.retain(|&idx| {
-                (ranges[idx]
+                ranges[idx]
                     .1
                     .as_ref()
-                    .map(|x| x < region_end)
-                    .unwrap_or(false)
-                    || region_end.is_empty())
+                    .map(|x| x >= region_end)
+                    .unwrap_or(true)
             });
         }
         // Now our live ranges are only those which are still not in bounds of the region.
         let mut ret = ScanRegionsStatus::Break;
         for &idx in &self.live_ranges {
-            self.ranges[idx].1 = Some(region_end.clone());
+            self.ranges[idx].0 = Some(region_end.clone());
             ret = ScanRegionsStatus::Continue;
         }
         ret
