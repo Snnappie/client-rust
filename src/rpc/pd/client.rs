@@ -1,15 +1,4 @@
-// Copyright 2018 The TiKV Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::{
     fmt,
@@ -19,7 +8,7 @@ use std::{
 
 use futures::Future;
 use grpcio::{CallOption, Environment};
-use kvproto::{metapb, pdpb, pdpb_grpc::PdClient as RpcClient};
+use kvproto::{metapb, pdpb, pdpb::PdClient as RpcClient};
 
 use crate::{
     rpc::{
@@ -117,7 +106,7 @@ impl PdClient {
         &self,
         region_id: u64,
     ) -> impl Future<Item = (metapb::Region, Option<metapb::Peer>), Error = Error> {
-        let mut req = pd_request!(self.cluster_id, pdpb::GetRegionByIDRequest);
+        let mut req = pd_request!(self.cluster_id, pdpb::GetRegionByIdRequest);
         req.set_region_id(region_id);
 
         self.execute(request_context(

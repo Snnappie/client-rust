@@ -1,15 +1,4 @@
-// Copyright 2018 PingCAP, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
 // TODO: Remove this when txn is done.
 #![allow(dead_code)]
@@ -18,8 +7,7 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use futures::Future;
 use grpcio::{CallOption, Environment};
-use kvproto::{errorpb, kvrpcpb, tikvpb_grpc::TikvClient};
-use protobuf;
+use kvproto::{errorpb, kvrpcpb, tikvpb::TikvClient};
 
 use crate::{
     rpc::{
@@ -95,7 +83,7 @@ has_region_error!(kvrpcpb::CleanupResponse);
 has_region_error!(kvrpcpb::BatchGetResponse);
 has_region_error!(kvrpcpb::ScanLockResponse);
 has_region_error!(kvrpcpb::ResolveLockResponse);
-has_region_error!(kvrpcpb::GCResponse);
+has_region_error!(kvrpcpb::GcResponse);
 has_region_error!(kvrpcpb::RawGetResponse);
 has_region_error!(kvrpcpb::RawBatchGetResponse);
 has_region_error!(kvrpcpb::RawPutResponse);
@@ -127,7 +115,7 @@ has_key_error!(kvrpcpb::BatchRollbackResponse);
 has_key_error!(kvrpcpb::CleanupResponse);
 has_key_error!(kvrpcpb::ScanLockResponse);
 has_key_error!(kvrpcpb::ResolveLockResponse);
-has_key_error!(kvrpcpb::GCResponse);
+has_key_error!(kvrpcpb::GcResponse);
 
 macro_rules! has_str_error {
     ($type:ty) => {
@@ -171,7 +159,7 @@ has_no_error!(kvrpcpb::RawBatchScanResponse);
 
 macro_rules! raw_request {
     ($context:expr, $type:ty) => {{
-        let mut req = <$type>::new();
+        let mut req = <$type>::default();
         let (region, cf) = $context.into_inner();
         req.set_context(region.into());
         if let Some(cf) = cf {
@@ -183,7 +171,7 @@ macro_rules! raw_request {
 
 macro_rules! txn_request {
     ($context:expr, $type:ty) => {{
-        let mut req = <$type>::new();
+        let mut req = <$type>::default();
         req.set_context($context.into_inner().into());
         req
     }};
@@ -191,7 +179,7 @@ macro_rules! txn_request {
 
 impl From<Mutation> for kvrpcpb::Mutation {
     fn from(mutation: Mutation) -> kvrpcpb::Mutation {
-        let mut pb = kvrpcpb::Mutation::new();
+        let mut pb = kvrpcpb::Mutation::default();
         match mutation {
             Mutation::Put(k, v) => {
                 pb.set_op(kvrpcpb::Op::Put);
@@ -217,7 +205,7 @@ impl From<Mutation> for kvrpcpb::Mutation {
 
 impl From<TxnInfo> for kvrpcpb::TxnInfo {
     fn from(txn_info: TxnInfo) -> kvrpcpb::TxnInfo {
-        let mut pb = kvrpcpb::TxnInfo::new();
+        let mut pb = kvrpcpb::TxnInfo::default();
         pb.set_txn(txn_info.txn);
         pb.set_status(txn_info.status);
         pb
@@ -328,7 +316,7 @@ impl KvClient {
         mutations: impl Iterator<Item = Mutation>,
         commit_version: u64,
     ) -> impl Future<Item = kvrpcpb::ImportResponse, Error = Error> {
-        let mut req = kvrpcpb::ImportRequest::new();
+        let mut req = kvrpcpb::ImportRequest::default();
         req.set_mutations(mutations.map(Into::into).collect());
         req.set_commit_version(commit_version);
 
@@ -426,8 +414,8 @@ impl KvClient {
         &self,
         context: TxnContext,
         safe_point: u64,
-    ) -> impl Future<Item = kvrpcpb::GCResponse, Error = Error> {
-        let mut req = txn_request!(context, kvrpcpb::GCRequest);
+    ) -> impl Future<Item = kvrpcpb::GcResponse, Error = Error> {
+        let mut req = txn_request!(context, kvrpcpb::GcRequest);
         req.set_safe_point(safe_point);
 
         self.execute(request_context(
@@ -635,7 +623,7 @@ impl KvClient {
 
     #[inline]
     fn convert_to_grpc_pair(pair: KvPair) -> kvrpcpb::KvPair {
-        let mut result = kvrpcpb::KvPair::new();
+        let mut result = kvrpcpb::KvPair::default();
         let (key, value) = pair.into_inner();
         result.set_key(key.into_inner());
         result.set_value(value.into_inner());
@@ -643,7 +631,7 @@ impl KvClient {
     }
 
     #[inline]
-    fn convert_to_grpc_pairs(pairs: Vec<KvPair>) -> protobuf::RepeatedField<kvrpcpb::KvPair> {
+    fn convert_to_grpc_pairs(pairs: Vec<KvPair>) -> Vec<kvrpcpb::KvPair> {
         pairs.into_iter().map(Self::convert_to_grpc_pair).collect()
     }
 
@@ -653,9 +641,8 @@ impl KvClient {
     }
 
     #[inline]
-    fn convert_from_grpc_pairs(pairs: protobuf::RepeatedField<kvrpcpb::KvPair>) -> Vec<KvPair> {
+    fn convert_from_grpc_pairs(pairs: Vec<kvrpcpb::KvPair>) -> Vec<KvPair> {
         pairs
-            .into_vec()
             .into_iter()
             .map(Self::convert_from_grpc_pair)
             .collect()
@@ -664,7 +651,7 @@ impl KvClient {
     #[inline]
     fn convert_to_grpc_range(range: (Option<Key>, Option<Key>)) -> kvrpcpb::KeyRange {
         let (start, end) = range;
-        let mut range = kvrpcpb::KeyRange::new();
+        let mut range = kvrpcpb::KeyRange::default();
         start.map(|k| range.set_start_key(k.into_inner())).unwrap();
         end.map(|k| range.set_end_key(k.into_inner())).unwrap();
         range
@@ -673,7 +660,7 @@ impl KvClient {
     #[inline]
     fn convert_to_grpc_ranges(
         ranges: impl Iterator<Item = (Option<Key>, Option<Key>)>,
-    ) -> protobuf::RepeatedField<kvrpcpb::KeyRange> {
+    ) -> Vec<kvrpcpb::KeyRange> {
         ranges.map(Self::convert_to_grpc_range).collect()
     }
 }

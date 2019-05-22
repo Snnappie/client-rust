@@ -1,15 +1,4 @@
-// Copyright 2018 The TiKV Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2018 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::{
     sync::{Arc, RwLock},
@@ -26,7 +15,7 @@ use futures::{
 };
 use fxhash::FxHashSet as HashSet;
 use grpcio::{CallOption, Environment, WriteFlags};
-use kvproto::{pdpb, pdpb_grpc};
+use kvproto::pdpb;
 use log::*;
 use tokio_core::reactor::{Core, Handle as OtherHandle};
 
@@ -44,8 +33,8 @@ use crate::{
 
 macro_rules! pd_request {
     ($cluster_id:expr, $type:ty) => {{
-        let mut request = <$type>::new();
-        let mut header = ::kvproto::pdpb::RequestHeader::new();
+        let mut request = <$type>::default();
+        let mut header = ::kvproto::pdpb::RequestHeader::default();
         header.set_cluster_id($cluster_id);
         request.set_header(header);
         request
@@ -225,7 +214,7 @@ impl PdReactor {
 }
 
 pub struct LeaderClient {
-    pub client: pdpb_grpc::PdClient,
+    pub client: pdpb::PdClient,
     pub members: pdpb::GetMembersResponse,
 
     env: Arc<Environment>,
@@ -304,7 +293,7 @@ pub fn validate_endpoints(
     endpoints: &[String],
     security_mgr: &SecurityManager,
     timeout: Duration,
-) -> Result<(pdpb_grpc::PdClient, pdpb::GetMembersResponse)> {
+) -> Result<(pdpb::PdClient, pdpb::GetMembersResponse)> {
     let len = endpoints.len();
     let mut endpoints_set = HashSet::with_capacity_and_hasher(len, Default::default());
 
@@ -359,11 +348,11 @@ fn connect(
     security_mgr: &SecurityManager,
     addr: &str,
     timeout: Duration,
-) -> Result<(pdpb_grpc::PdClient, pdpb::GetMembersResponse)> {
-    let client = security_mgr.connect(env, addr, pdpb_grpc::PdClient::new)?;
+) -> Result<(pdpb::PdClient, pdpb::GetMembersResponse)> {
+    let client = security_mgr.connect(env, addr, pdpb::PdClient::new)?;
     let option = CallOption::default().timeout(timeout);
     let resp = client
-        .get_members_opt(&pdpb::GetMembersRequest::new(), option)
+        .get_members_opt(&pdpb::GetMembersRequest::default(), option)
         .map_err(Error::from)?;
     Ok((client, resp))
 }
@@ -374,7 +363,7 @@ fn try_connect(
     addr: &str,
     cluster_id: u64,
     timeout: Duration,
-) -> Result<(pdpb_grpc::PdClient, pdpb::GetMembersResponse)> {
+) -> Result<(pdpb::PdClient, pdpb::GetMembersResponse)> {
     let (client, r) = connect(Arc::clone(&env), security_mgr, addr, timeout)?;
     let new_cluster_id = r.get_header().get_cluster_id();
     if new_cluster_id != cluster_id {
@@ -394,7 +383,7 @@ pub fn try_connect_leader(
     security_mgr: &SecurityManager,
     previous: &pdpb::GetMembersResponse,
     timeout: Duration,
-) -> Result<(pdpb_grpc::PdClient, pdpb::GetMembersResponse)> {
+) -> Result<(pdpb::PdClient, pdpb::GetMembersResponse)> {
     let previous_leader = previous.get_leader();
     let members = previous.get_members();
     let cluster_id = previous.get_header().get_cluster_id();
