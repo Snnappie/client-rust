@@ -467,7 +467,7 @@ impl KvClient {
             "raw_batch_get",
             move |cli: Arc<TikvClient>, opt: _| cli.raw_batch_get_async_opt(&req, opt),
         ))
-        .map(|mut resp| Self::convert_from_grpc_pairs(resp.take_pairs()))
+        .map(|mut resp| Self::convert_from_grpc_pairs(resp.take_pairs().to_vec()))
     }
 
     pub fn raw_put(

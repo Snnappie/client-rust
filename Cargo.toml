@@ -22,7 +22,7 @@ failure = "0.1"
 futures = "0.1"
 fxhash = "0.2"
 grpcio = { version = "0.5.0-alpha", features = [ "secure", "prost-codec" ], default-features = false }
-lazy_static = "0.2.1"
+lazy_static = "1"
 log = "0.3.9"
 serde = "1.0"
 serde_derive = "1.0"
@@ -31,6 +31,9 @@ tokio-timer = "0.2"
 
 [dependencies.kvproto]
 git = "https://github.com/pingcap/kvproto.git"
+rev = "40f56201"
+features = ["prost-codec"]
+default-features = false
 
 [dependencies.prometheus]
 version = "0.4.2"
