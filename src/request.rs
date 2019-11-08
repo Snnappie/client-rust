@@ -143,10 +143,14 @@ pub fn store_stream_for_range<PdC: PdClient>(
     pd_client: Arc<PdC>,
 ) -> BoxStream<'static, Result<((Key, Key), Store<PdC::KvClient>)>> {
     pd_client
-        .stores_for_range(range)
+        .stores_for_range(range.clone())
         .map_ok(move |store| {
-            // FIXME should be bounded by self.range
-            let range = store.region.range();
+            let (lower, upper) = range.clone().into_keys();
+            let upper = upper.unwrap_or_else(|| {
+                let (_, region_upper) = store.region.range();
+                region_upper
+            });
+            let range = (lower, upper);
             (range, store)
         })
         .into_stream()
