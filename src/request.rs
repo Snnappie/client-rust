@@ -83,6 +83,7 @@ pub trait KvRequest: Sync + Send + 'static + Sized {
     ) -> BoxStream<'static, Result<Self::RpcResponse>> {
         // Retry on region errors by default
         // TODO: Add backoff and retry limit
+        dbg!("Region error", &_region_error);
         self.response_stream(pd_client.clone())
     }
 
@@ -145,11 +146,21 @@ pub fn store_stream_for_range<PdC: PdClient>(
     pd_client
         .stores_for_range(range.clone())
         .map_ok(move |store| {
-            let (lower, upper) = range.clone().into_keys();
-            let upper = upper.unwrap_or_else(|| {
-                let (_, region_upper) = store.region.range();
-                region_upper
-            });
+            let (lower, _) = range.clone().into_keys();
+            let (region_lower, upper) = store.region.range();
+            // TODO (JAB): There seems to be a problem with this where sometimes we return multiple
+            // regions worth of keys in one scan, resulting in returning keys out of order (as well
+            // as returning too many keys for the provided limit). This allows us to work around it
+            // by ignoring the extra keys returned, but this should be fixed properly.
+            let lower = if region_lower < lower {
+                lower
+            } else {
+                region_lower
+            };
+            // let upper = upper.unwrap_or_else(|| {
+            //     let (_, region_upper) = store.region.range();
+            //     region_upper
+            // });
             let range = (lower, upper);
             (range, store)
         })
