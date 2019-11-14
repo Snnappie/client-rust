@@ -72,7 +72,7 @@ impl RetryClient<Cluster> {
     // These get_* functions will try multiple times to make a request, reconnecting as necessary.
     pub async fn get_region(self: Arc<Self>, key: Vec<u8>) -> Result<Region> {
         let timeout = self.timeout;
-        retry_request(self, move |cluster| {
+        retry_request(self, "get_region", move |cluster| {
             cluster.get_region(key.clone(), timeout)
         })
         .await
@@ -80,22 +80,22 @@ impl RetryClient<Cluster> {
 
     pub async fn get_region_by_id(self: Arc<Self>, id: RegionId) -> Result<Region> {
         let timeout = self.timeout;
-        retry_request(self, move |cluster| cluster.get_region_by_id(id, timeout)).await
+        retry_request(self, "get_region_by_id", move |cluster| cluster.get_region_by_id(id, timeout)).await
     }
 
     pub async fn get_store(self: Arc<Self>, id: StoreId) -> Result<metapb::Store> {
         let timeout = self.timeout;
-        retry_request(self, move |cluster| cluster.get_store(id, timeout)).await
+        retry_request(self, "get_store", move |cluster| cluster.get_store(id, timeout)).await
     }
 
     #[allow(dead_code)]
     pub async fn get_all_stores(self: Arc<Self>) -> Result<Vec<metapb::Store>> {
         let timeout = self.timeout;
-        retry_request(self, move |cluster| cluster.get_all_stores(timeout)).await
+        retry_request(self, "get_all_stores", move |cluster| cluster.get_all_stores(timeout)).await
     }
 
     pub async fn get_timestamp(self: Arc<Self>) -> Result<Timestamp> {
-        retry_request(self, move |cluster| cluster.get_timestamp()).await
+        retry_request(self, "get_timestamp", move |cluster| cluster.get_timestamp()).await
     }
 }
 
@@ -119,11 +119,17 @@ impl Reconnect for RetryClient<Cluster> {
     type Cl = Cluster;
 
     fn reconnect(&self, interval: u64) -> Result<()> {
-        if let Some(cluster) =
-            self.connection
-                .reconnect(&self.cluster.read().unwrap(), interval, self.timeout)?
-        {
+        // NOTE (JAB, 2019-11-14): When you create a scope like
+        // `if let Some(c) = borrow(&thing) { }`, `&thing` remains active for the whole `if` scope.
+        // Which means if we use `if let Some(cluster) = self.connection.reconnect(...) { }`, we
+        // _cannot_ get a `write()`, since `&self.cluster.read()` will still be in scope.
+        let cluster = 
+            self.connection.reconnect(&self.cluster.read().unwrap(), interval, self.timeout)?;
+        if let Some(cluster) = cluster {
+            let id = cluster.id;
+            debug!("Storing new cluster: {}", id);
             *self.cluster.write().unwrap() = cluster;
+            debug!("Done storing new cluster: {}", id);
         }
         Ok(())
     }
@@ -133,7 +139,7 @@ impl Reconnect for RetryClient<Cluster> {
     }
 }
 
-async fn retry_request<Rc, Resp, Func, RespFuture>(client: Arc<Rc>, func: Func) -> Result<Resp>
+async fn retry_request<Rc, Resp, Func, RespFuture>(client: Arc<Rc>, name: &str, func: Func) -> Result<Resp>
 where
     Rc: Reconnect,
     Resp: Send + 'static,
@@ -145,7 +151,10 @@ where
         let fut = client.with_cluster(&func);
         match fut.await {
             Ok(r) => return Ok(r),
-            Err(e) => last_err = Err(e),
+            Err(e) => {
+                warn!("client call failed - Call: {}\tErr: {:?}", name, e);
+                last_err = Err(e);
+            }
         }
 
         // Reconnect.

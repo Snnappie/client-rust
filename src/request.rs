@@ -84,7 +84,7 @@ pub trait KvRequest: Sync + Send + 'static + Sized {
         // Retry on region errors by default
         // TODO: Add backoff and retry limit
         dbg!("Region error", &_region_error);
-        self.response_stream(pd_client.clone())
+        self.response_stream(pd_client)
     }
 
     fn store_stream<PdC: PdClient>(
