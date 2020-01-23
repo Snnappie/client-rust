@@ -146,8 +146,8 @@ pub fn store_stream_for_range<PdC: PdClient>(
     pd_client
         .stores_for_range(range.clone())
         .map_ok(move |store| {
-            let (lower, _) = range.clone().into_keys();
-            let (region_lower, upper) = store.region.range();
+            let (lower, upper) = range.clone().into_keys();
+            let (region_lower, region_upper) = store.region.range();
             // TODO (JAB): There seems to be a problem with this where sometimes we return multiple
             // regions worth of keys in one scan, resulting in returning keys out of order (as well
             // as returning too many keys for the provided limit). This allows us to work around it
@@ -157,10 +157,16 @@ pub fn store_stream_for_range<PdC: PdClient>(
             } else {
                 region_lower
             };
-            // let upper = upper.unwrap_or_else(|| {
-            //     let (_, region_upper) = store.region.range();
-            //     region_upper
-            // });
+            let upper = match upper {
+                Some(upper) => {
+                    if region_upper.is_empty() || upper <= region_upper {
+                        upper
+                    } else {
+                        region_upper
+                    }
+                }
+                _ => region_upper,
+            };
             let range = (lower, upper);
             (range, store)
         })
